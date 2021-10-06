@@ -32,3 +32,6 @@ slog = "2.7.0"
 slog-term = "2.8.0"
 slog-async = "2.7.0"
 # slog-scope = "4.4.0"
+
+[dev-dependencies]
+tempfile = "3.2.0"
