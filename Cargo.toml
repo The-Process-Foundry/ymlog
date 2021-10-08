@@ -28,10 +28,11 @@ serde_yaml = "0.8.21"
 chrono = { version = "0.4.19", features = ["serde"] }
 
 # a contextual logging framework
-slog = "2.7.0"
-slog-term = "2.8.0"
-slog-async = "2.7.0"
-# slog-scope = "4.4.0"
+tracing = "0.1.29"
+tracing-subscriber = "0.2.25"
+tracing-appender = "0.1.2"
+
 
 [dev-dependencies]
 tempfile = "3.2.0"
+tokio-test = "0.4.2"

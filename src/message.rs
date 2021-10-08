@@ -3,7 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use serde_yaml::Error as YmlError;
-use slog::Level;
+
+use crate::prelude::*;
 
 /// A block is a message formatting container
 ///
@@ -61,13 +62,13 @@ impl Serialize for Block {
         if self.log_level.is_some() {
           state.serialize_field(
             "log_level",
-            match &self.log_level.unwrap() {
-              Level::Trace => "Trace",
-              Level::Debug => "Debug",
-              Level::Info => "Info",
-              Level::Critical => "Critical",
-              Level::Warning => "Warn",
-              Level::Error => "Error",
+            match &self.log_level {
+              Some(Level::Trace) => "Trace",
+              Some(Level::Debug) => "Debug",
+              Some(Level::Info) => "Info",
+              Some(Level::Warn) => "Warn",
+              Some(Level::Error) => "Error",
+              None => unreachable!("Already checked for None"),
             },
           )?
         };

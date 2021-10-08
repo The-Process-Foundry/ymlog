@@ -3,7 +3,6 @@
 //!
 #![feature(trace_macros)]
 
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -11,16 +10,16 @@ use ymlog::prelude::*;
 
 // Make a buffer for test result inspection
 mod common {
-  use std::cell::RefCell;
   use std::io::{IoSlice, Result, Write};
   use std::sync::Arc;
+  use std::sync::Mutex;
 
   /// A basic write buffer that we can keep a reference to to examine the contents later
   #[derive(Clone)]
-  pub struct TestWriter(Arc<RefCell<Vec<u8>>>);
+  pub struct TestWriter(Arc<Mutex<Vec<u8>>>);
 
   impl TestWriter {
-    pub fn new(buffer: &Arc<RefCell<Vec<u8>>>) -> TestWriter {
+    pub fn new(buffer: &Arc<Mutex<Vec<u8>>>) -> TestWriter {
       TestWriter(Arc::clone(buffer))
     }
   }
@@ -30,72 +29,98 @@ mod common {
 
   impl Write for TestWriter {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-      Arc::make_mut(&mut self.0).get_mut().write(buf)
+      self.0.lock().unwrap().write(buf)
     }
 
     fn flush(&mut self) -> Result<()> {
-      Arc::make_mut(&mut self.0).get_mut().flush()
+      self.0.lock().unwrap().flush()
     }
 
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> Result<usize> {
-      Arc::make_mut(&mut self.0).get_mut().write_vectored(bufs)
+      self.0.lock().unwrap().write_vectored(bufs)
     }
 
     fn write_all(&mut self, buf: &[u8]) -> Result<()> {
-      Arc::make_mut(&mut self.0).get_mut().write_all(buf)
+      self.0.lock().unwrap().write_all(buf)
     }
 
     fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> Result<()> {
-      Arc::make_mut(&mut self.0).get_mut().write_fmt(fmt)
+      self.0.lock().unwrap().write_fmt(fmt)
     }
   }
 }
 
 lazy_static::lazy_static! {
   // TODO: It looks as if slog_scopes does this by magic. Look into it
-  pub(crate) static ref LOG: Mutex<YmLog> = Mutex::new(YmLog::new());
+  pub(crate) static ref LOG: Mutex<YmLog<common::TestWriter>> = Mutex::new(YmLog::new());
 }
 
 #[test]
-fn test_recursion() {
-  let buffer = Arc::new(RefCell::new(Vec::new()));
+/// Just making sure the basics work. All the functional edge cases will be tested elsewhere
+fn sanity_check() {
+  let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
   let writer = common::TestWriter::new(&Arc::clone(&buffer));
   crate::LOG.lock().unwrap().set_output(writer);
 
-  // Write a log statement
-  fn recurse(remains: &mut Vec<i32>) {
-    let value = remains.pop();
-    if value.is_none() {
-      return;
-    }
-
-    match value.as_ref().unwrap() % 5 {
-      0 => ymlog!("R0, value is {:?}", value),
-      1 => ymlog!("_+" => "R1, value is {:?}", value),
-      2 => ymlog!("_" => "R2, Indented After value is{:?}", value),
-      3 => ymlog!("+++_" => "R3, Indented After value is{:?}", value),
-      // 3 =>  {
-      // trace_macros!(true);
-      // ymlog!("+_-" => {
-      // msg => "R3, Bump Test, value is {:?}", value
-      // }),
-      // trace_macros!(false);
-      // }
-      4 => ymlog!("--_" => "Back to the the root level, value is {:?}", value),
-      _ => unreachable!("Mod never gets above 5"),
-    }
+  fn is_eq(expected: &str, buffer: &Arc<Mutex<Vec<u8>>>) {
+    assert_eq!(
+      expected,
+      std::str::from_utf8(&buffer.lock().unwrap()).unwrap()
+    );
   }
 
-  println!("The Log Contents now:\n{:?}", *buffer);
-  let mut values: Vec<i32> = (1..100).collect();
-  recurse(&mut values);
-  /*
+  // Empty buffer
+  let mut expected = String::new();
+  is_eq(&expected, &buffer);
 
-  ymlog! {
-    "Hi, I'm an Info level message written at the current indentation level. {}",
-    "The standard display formatter is implied by this"
-  };
+  ymlog!("Root Message");
+  expected.push_str("---\nRoot Message");
+  is_eq(&expected, &buffer);
 
-  */
-  panic!("I'm done here")
+  // trace_macros!(true);
+  ymlog!("_" => "Another Root Message (not a sequence)");
+  // trace_macros!(false);
+  expected.push_str("\nAnother Root Message (not a sequence)");
+  is_eq(&expected, &buffer);
+
+  ymlog!("+_" => "Add an indented record");
+  expected.push_str(":\n  - Add an indented record");
+  is_eq(&expected, &buffer);
+
+  ymlog!("_" => "Second at depth 1");
+  expected.push_str("\n  - Second at depth 1");
+  is_eq(&expected, &buffer);
+
+  ymlog!("_+" => "Third and adds an indent at the end");
+  expected.push_str("\n  - Third and adds an indent at the end");
+  is_eq(&expected, &buffer);
+
+  ymlog!("_" => "First at depth 2");
+  expected.push_str(":\n    - First at depth 2");
+  is_eq(&expected, &buffer);
+
+  ymlog!("+_+" => "First at depth 3 with a trailing indent");
+  expected.push_str(":\n      - First at depth 3 with a trailing indent");
+  is_eq(&expected, &buffer);
+
+  ymlog!("_" => "First at depth 4");
+  expected.push_str(":\n        - First at depth 4");
+  is_eq(&expected, &buffer);
+
+  ymlog!("--_-" => "Dedent twice to depth 2");
+  expected.push_str("\n    - Dedent twice to depth 2");
+  is_eq(&expected, &buffer);
+
+  ymlog!("_" => "And the trailing dedent brings us back to depth 1");
+  expected.push_str("\n  - And the trailing dedent brings us back to depth 1");
+  is_eq(&expected, &buffer);
+
+  ymlog!("+-_" => "Neutral indent commands");
+  expected.push_str("\n  - Neutral indent commands");
+  is_eq(&expected, &buffer);
+
+  // println!(
+  //   "\n\nThe final buffer: '''{}'''\n",
+  //   std::str::from_utf8(&buffer.lock().unwrap()).unwrap()
+  // );
 }

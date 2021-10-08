@@ -15,6 +15,21 @@ macro_rules! ymlogger {
 ///
 #[macro_export]
 macro_rules! ymlog {
+
+  // --- Block Parameters
+
+  (@msg $block:ident $msg:expr) => { let _ = $block.set_message($msg); };
+  (@msg $block:ident $($msg:expr),+) => { let _ = $block.set_message(format!($($msg),+)); };
+
+  (@block $block:ident $($key:expr => $($value:expr),+),+) => {
+    $(ymlog!(@$key, $block, $($values),+));+
+  };
+
+  // --- Send the message
+  (@send $block:ident $acts:ident) => {
+    crate::LOG.lock().unwrap().log(&mut $block, $acts);
+  };
+
   // --- Entry points
 
   // A bare message string
@@ -27,12 +42,12 @@ macro_rules! ymlog {
   // Block Only
   ( $params:block ) => {{
     let mut block = ymlog::Block::new();
-    ymlog!(@params $params)
+    ymlog!(@block $block $params)
     ymlog!(@send block None)
   }};
 
   // Actions with a full Block
-  ( $actions:expr => $block_def:tt ) => {{
+  ( $actions:expr => {$block_def:tt} ) => {{
     let acts = Some($actions);
     let mut block = ymlog::Block::new();
     ymlog!(@params block $block_def);
@@ -46,20 +61,6 @@ macro_rules! ymlog {
     ymlog!(@msg block $($msg),+);
     ymlog!(@send block acts)
   }};
-
-  // --- Block Parameters
-  (@msg $block:ident $msg:expr) => { $block.set_message($msg); };
-  (@msg $block:ident $($msg:expr),+) => { $block.set_message(format!($($msg),+)); };
-
-  (@params $block:ident $($key:expr => $($value:expr),+),+) => {
-    $(ymlog!(@$key, $block, $($values),+));+
-  };
-
-
-  // --- Send the message
-  (@send $block:ident $acts:ident) => {
-    crate::LOG.lock().unwrap().log(&mut $block, $acts);
-  };
 
 }
 
