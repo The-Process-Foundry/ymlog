@@ -80,7 +80,7 @@ fn sanity_check() {
   // trace_macros!(true);
   ymlog!("_" => "Another Root Message (not a sequence)");
   // trace_macros!(false);
-  expected.push_str("\nAnother Root Message (not a sequence)");
+  expected.push_str("\n---\nAnother Root Message (not a sequence)");
   is_eq(&expected, &buffer);
 
   ymlog!("+_" => "Add an indented record");
@@ -117,6 +117,20 @@ fn sanity_check() {
 
   ymlog!("+-_" => "Neutral indent commands");
   expected.push_str("\n  - Neutral indent commands");
+  is_eq(&expected, &buffer);
+
+  ymlog!("+_" => "Adding a Block Indent\nWith extra text");
+  expected.push_str(":\n    - |-\n      Adding a Block Indent\n      With extra text");
+  is_eq(&expected, &buffer);
+
+  ymlog!("+_" => "Adding another Block Indent\nAfter a block");
+  expected.push_str(
+    "\n    - \"\" :\n      - |-\n        Adding another Block Indent\n        After a block",
+  );
+  is_eq(&expected, &buffer);
+
+  ymlog!("_" => "Add a simple item");
+  expected.push_str("\n      - Add a simple item");
   is_eq(&expected, &buffer);
 
   // println!(

@@ -23,6 +23,9 @@ pub struct Block {
   /// The content of the message
   pub(crate) message: Option<serde_yaml::Value>,
 
+  /// The style that the message should be written in
+  pub(crate) style: Option<Style>,
+
   /// Any indented child blocks
   ///
   /// This is really only used for deserializing. A user is never allowed to directly add children
@@ -89,7 +92,7 @@ impl Block {
 
   /// Change the message to the Display message of the object passed in
   pub fn set_message(&mut self, message: impl Serialize) -> Result<(), YmlError> {
-    println!("Setting the message");
+    // println!("Setting the message");
     self.message = Some(serde_yaml::to_value(message)?);
     Ok(())
   }
@@ -112,5 +115,47 @@ impl Block {
   /// Set the timestamp to the current time
   pub fn stamp(&mut self) {
     self.timestamp = Some(Utc::now());
+  }
+
+  /// Set the style
+  pub fn set_style(&mut self, style: Style) {
+    self.style = Some(style);
+  }
+}
+
+/// Whether to remove any trailing newlines
+pub enum Chomp {
+  Clip,
+  Strip,
+  Keep,
+}
+
+impl Default for Chomp {
+  fn default() -> Self {
+    Chomp::Clip
+  }
+}
+
+/// How YAML should handle formatting multiline strings
+pub enum Style {
+  /// This will guess the best style based on the contents of the message (Heaviest calculation)
+  Guess,
+
+  /// Block Style: Folded replaces all individual newlines with a single space '>'
+  Folded(Chomp),
+  /// Block Style: Leave all newlines as is: '|'
+  Literal(Chomp),
+
+  /// Flow Style:
+  Plain,
+  /// Flow Style: encode everything within single quotes
+  Single,
+  /// Flow Style: encode everything within single quotes
+  Double,
+}
+
+impl Default for Style {
+  fn default() -> Self {
+    Style::Guess
   }
 }

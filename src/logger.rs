@@ -21,10 +21,18 @@ pub enum Level {
 enum LastBlockType {
   // Nothing has yet been written
   None,
-  // Wrote a complete message in a sequence at the current level
+
+  // Wrote key message
   Message,
+
+  // Wrote a message as a block (requires a "children:")
+  BlockMessage,
+
   // An indent record was requested for the next block
   Indent,
+
+  // A block was printed, so we need to use a different character to use it as a
+  BlockIndent,
 }
 
 impl Default for LastBlockType {
@@ -72,28 +80,49 @@ impl Tracker {
         mapping.insert(value.clone(), YmlValue::Sequence(seq));
         (YmlValue::Mapping(mapping), last_depth)
       }
+
       (Some(value), None) => (value.clone(), vec![LastBlockType::Message]),
     }
+  }
+
+  /// If it is a plain string, If it finds any \n in the message, it turns it into a block
+  /// HACK: This is a lack in rust-yaml, which trickled into serde_yaml. Blocks are not detected,
+  ///       and cannot be set manually. So I'm just going to handle the simple message.
+  fn is_block(value: &YmlValue) -> bool {
+    if let YmlValue::String(inner) = value {
+      return inner.contains('\n');
+    }
+    false
   }
 
   /// Add the proper indentation around the block".to_string()
   ///
   /// It also adds a "__Cut Here__" so when stringified, we can remove the plain indents that do not
   /// need to be added
-  fn to_indented_string(&self, value: YmlValue) -> String {
-    println!("\n\nIndenting value: {:?}", value);
-    println!("At depth: {:?}", self.depth);
+  fn to_indented_string(&mut self, value: YmlValue) -> String {
+    // println!("\n\nIndenting value: {:?}", value);
+    // println!("At depth: {:?}", self.depth);
+
+    let is_block = Tracker::is_block(&value);
+    if is_block {
+      if let Some(last) = self.depth.last_mut() {
+        println!("Updating last message to BlockMessage from {:?}", last);
+        *last = LastBlockType::BlockMessage;
+      }
+    }
 
     match self.depth.len() {
       0 => unreachable!("Should never be able to get here with a zero depth"),
 
-      // Print a root level message, removing the doc string
-      1 => match serde_yaml::to_string(&value).unwrap().split_once("---\n") {
-        None => unreachable!(
-          "\n\n--->Could not find '---\n' in the serialized message block:\n{:#?}",
-          serde_yaml::to_string(&value).unwrap()
-        ),
-        Some((_, message)) => message.to_string(),
+      // Print a root level message (new document)
+      1 => match is_block {
+        true => {
+          if let YmlValue::String(inner) = value {
+            return format!("|+ {}", inner);
+          };
+          unreachable!("It's a block, so it's always a string")
+        }
+        false => serde_yaml::to_string(&value).unwrap(),
       },
 
       // Pad out the value so the message and children have the proper indentation
@@ -112,7 +141,7 @@ impl Tracker {
           padded = YmlValue::Mapping(tmp);
         }
 
-        println!("The padded message is: {:?}", padded);
+        // println!("The padded message is: {:?}", padded);
 
         // Find the placeholder and get rid of it
         match serde_yaml::to_string(&padded)
@@ -123,7 +152,27 @@ impl Tracker {
             "\n\n--->Could not find '__Cut Here__:' in the serialized message block:\n{:#?}",
             serde_yaml::to_string(&padded).unwrap()
           ),
-          Some((_, message)) => message.to_string(),
+          Some((_, message)) => match is_block {
+            true => {
+              let i_size = self.depth.len() * 2;
+
+              // Split after the initial indent
+              let (indent, end) = message.split_at(i_size);
+
+              // Add an indent after each carriage return
+              let block_indent = " ".repeat(i_size);
+
+              let sliced = &end[1..end.len() - 2].replace("\\n", &format!("\n{}", block_indent));
+              let full = format!("{}|-\n{}{}\n", indent, block_indent, sliced);
+
+              println!(
+                "[\tindent: {},\n\tsliced: {},\n\tblock_indent: '{}'\n\tfull: '''\n{}\n\t'''\n]",
+                indent, sliced, block_indent, full
+              );
+              full
+            }
+            false => message.to_string(),
+          },
         }
       }
     }
@@ -161,15 +210,34 @@ impl Tracker {
         format!("\n{}", self.to_indented_string(value))
       }
 
+      // The last item was a block. This only affects indents after
+      Some(LastBlockType::BlockMessage) => {
+        format!("\n{}", self.to_indented_string(value))
+      }
+
       // An indent was requested for this item
       Some(LastBlockType::Indent) => {
-        let result = format!(":\n{}", self.to_indented_string(value));
+        // Tell the tracker we've taken care of the indent
         if let Some(last) = self.depth.last_mut() {
           *last = LastBlockType::Message;
         }
-        // Add the indented message to the depth
-        *self.depth.last_mut().unwrap() = LastBlockType::Message;
-        result
+        format!(":\n{}", self.to_indented_string(value))
+      }
+
+      // An indent was requested for this item
+      // HACK: To make this work as a stream, we have to add a phony key
+      Some(LastBlockType::BlockIndent) => {
+        // Tell the tracker we've taken care of the indent
+        if let Some(last) = self.depth.last_mut() {
+          *last = LastBlockType::BlockMessage;
+        }
+
+        // This adds another item to the sequence and the phony key
+        format!(
+          "\n{}- \"\" :\n{}",
+          "  ".repeat(self.depth.len() - 2),
+          self.to_indented_string(value)
+        )
       }
     }
     .trim_end()
@@ -186,8 +254,10 @@ impl Tracker {
   /// To indent a message, the last item needs to be turned into a key using a ":". Each parent node
   /// only indents once, so additional attempts to indent are ignored.
   pub fn indent(&mut self) {
-    if let Some(LastBlockType::Message) = &self.depth.last() {
-      self.depth.push(LastBlockType::Indent)
+    match &self.depth.last() {
+      Some(LastBlockType::Message) => self.depth.push(LastBlockType::Indent),
+      Some(LastBlockType::BlockMessage) => self.depth.push(LastBlockType::BlockIndent),
+      _ => (),
     };
   }
 
@@ -254,7 +324,6 @@ where
     //-> Result<(), std::io::Error> {
 
     let level = block.log_level.as_ref().unwrap_or(&Level::Info);
-    println!("Writing block: {:?}: {:?}", level, block.message);
     if self.log_level > *level {
       return;
     };
@@ -276,13 +345,16 @@ where
     let mut has_printed = false;
     let acts = actions.unwrap_or("");
 
-    println!("Processing actions: {:#?}", actions);
+    // println!("Processing actions: {:#?}", actions);
     for c in acts.chars() {
       match c {
         // Indentation options
         '+' => self.tracker.indent(),
         '-' => self.tracker.dedent(),
         'r' => self.tracker.reset(),
+
+        // Formatting options for the message
+        'b' => block.set_style(Style::Literal(Chomp::Clip)),
 
         // Write the block
         '_' => {
