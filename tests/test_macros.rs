@@ -11,8 +11,7 @@ use ymlog::prelude::*;
 // Make a buffer for test result inspection
 mod common {
   use std::io::{IoSlice, Result, Write};
-  use std::sync::Arc;
-  use std::sync::Mutex;
+  use std::sync::{Arc, Mutex};
 
   /// A basic write buffer that we can keep a reference to to examine the contents later
   #[derive(Clone)]

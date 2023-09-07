@@ -3,8 +3,9 @@
 // use std::fs::OpenOptions;
 use std::cell::RefCell;
 
-use serde_yaml::{Error as YmlError, Mapping, Sequence, Value as YmlValue};
+use serde_yaml::{Mapping, Value as YmlValue};
 
+use crate::message::MessageType;
 use crate::prelude::*;
 
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
@@ -22,6 +23,9 @@ enum LastBlockType {
   // Nothing has yet been written
   None,
 
+  // A reset has been sent, so we need to prefix a '\n'
+  Reset,
+
   // Wrote key message
   Message,
 
@@ -33,6 +37,9 @@ enum LastBlockType {
 
   // A block was printed, so we need to use a different character to use it as a
   BlockIndent,
+
+  /// Printed a key/value pair and should dedent before automatically should dedent when found
+  KeyValue,
 }
 
 impl Default for LastBlockType {
@@ -60,13 +67,16 @@ impl Tracker {
   fn build_value(block: &Block) -> (YmlValue, Vec<LastBlockType>) {
     // One or the other, both makes no sense
     match (&block.message, &block.children) {
-      (Some(YmlValue::Mapping(_)), Some(_)) => {
-        panic!("Log message blocks either have children or a map, not both")
-      }
-      (None, _) => {
+      // Always fail if there is no message
+      (MessageType::None, _) => {
         panic!("Logs must always have a base message set")
       }
-      (Some(value), Some(children)) => {
+
+      (MessageType::Value(YmlValue::Mapping(_)), Some(_)) => {
+        panic!("Log message blocks either have children or a map, not both")
+      }
+
+      (MessageType::Value(value), Some(children)) => {
         // We will continue at the depth of the last child
         let mut last_depth = vec![];
         let seq = children.iter().fold(vec![], |mut acc, child| {
@@ -81,7 +91,18 @@ impl Tracker {
         (YmlValue::Mapping(mapping), last_depth)
       }
 
-      (Some(value), None) => (value.clone(), vec![LastBlockType::Message]),
+      (MessageType::Value(value), None) => (value.clone(), vec![LastBlockType::Message]),
+
+      (MessageType::KeyValue(_, _), Some(_)) => {
+        panic!("Key/Value log messages cannot have children")
+      }
+
+      (MessageType::KeyValue(key, value), None) => {
+        let mut mapping = Mapping::new();
+        mapping.insert(key.to_owned(), value.to_owned());
+
+        (YmlValue::Mapping(mapping), vec![LastBlockType::KeyValue])
+      }
     }
   }
 
@@ -99,14 +120,13 @@ impl Tracker {
   ///
   /// It also adds a "__Cut Here__" so when stringified, we can remove the plain indents that do not
   /// need to be added
-  fn to_indented_string(&mut self, value: YmlValue) -> String {
+  fn indent_string(&mut self, value: YmlValue) -> String {
     // println!("\n\nIndenting value: {:?}", value);
     // println!("At depth: {:?}", self.depth);
 
     let is_block = Tracker::is_block(&value);
     if is_block {
       if let Some(last) = self.depth.last_mut() {
-        println!("Updating last message to BlockMessage from {:?}", last);
         *last = LastBlockType::BlockMessage;
       }
     }
@@ -149,7 +169,7 @@ impl Tracker {
           .split_once("__Cut Here__:\n")
         {
           None => panic!(
-            "\n\n--->Could not find '__Cut Here__:' in the serialized message block:\n{:#?}",
+            "\n\n--> Could not find '__Cut Here__:' in the serialized message block:\n{:#?}",
             serde_yaml::to_string(&padded).unwrap()
           ),
           Some((_, message)) => match is_block {
@@ -163,13 +183,7 @@ impl Tracker {
               let block_indent = " ".repeat(i_size);
 
               let sliced = &end[1..end.len() - 2].replace("\\n", &format!("\n{}", block_indent));
-              let full = format!("{}|-\n{}{}\n", indent, block_indent, sliced);
-
-              println!(
-                "[\tindent: {},\n\tsliced: {},\n\tblock_indent: '{}'\n\tfull: '''\n{}\n\t'''\n]",
-                indent, sliced, block_indent, full
-              );
-              full
+              format!("{}|-\n{}{}\n", indent, block_indent, sliced)
             }
             false => message.to_string(),
           },
@@ -180,39 +194,42 @@ impl Tracker {
 
   /// Convert it to a writable string, updating the Tracker state
   pub fn serialize(&mut self, block: &mut Block) -> String {
-    // -> Result<String, YmlError> {
-    // println!(
-    //   "Serializing the block now: {:?}. Last Block Type was {:?}",
-    //   block.message,
-    //   self.depth.last()
-    // );
-
     // Convert the block into a pure YmlValue and its depth
-    let (value, _) = Tracker::build_value(block);
+    let (value, _new_depth) = Tracker::build_value(block);
 
     // Convert the value to a string with proper indentation
     let indented = match self.depth.last() {
       // First message in the document is done plain
       None => {
         self.depth.push(LastBlockType::Message);
-        serde_yaml::to_string(&value).unwrap()
+        format!("\n{}", serde_yaml::to_string(&value).unwrap())
       }
-      // Same as None, but has written the document tag
+
+      // Same as None, but has written the document tag. It appends a newline, so the next document
+      // tag doesn't get mashed up on the previous line
       Some(LastBlockType::None) => {
         if let Some(last) = self.depth.last_mut() {
           *last = LastBlockType::Message;
         }
-        serde_yaml::to_string(&value).unwrap()
+        format!("\n{}", serde_yaml::to_string(&value).unwrap())
+      }
+
+      // After an explicit reset, we need to add a newline
+      Some(LastBlockType::Reset) => {
+        if let Some(last) = self.depth.last_mut() {
+          *last = LastBlockType::Message;
+        }
+        format!("\n{}", serde_yaml::to_string(&value).unwrap())
       }
 
       // The last item was in a sequence (this is the plain record)
       Some(LastBlockType::Message) => {
-        format!("\n{}", self.to_indented_string(value))
+        format!("\n{}", self.indent_string(value))
       }
 
       // The last item was a block. This only affects indents after
       Some(LastBlockType::BlockMessage) => {
-        format!("\n{}", self.to_indented_string(value))
+        format!("\n{}", self.indent_string(value))
       }
 
       // An indent was requested for this item
@@ -221,7 +238,7 @@ impl Tracker {
         if let Some(last) = self.depth.last_mut() {
           *last = LastBlockType::Message;
         }
-        format!(":\n{}", self.to_indented_string(value))
+        format!(":\n{}", self.indent_string(value))
       }
 
       // An indent was requested for this item
@@ -236,9 +253,11 @@ impl Tracker {
         format!(
           "\n{}- \"\" :\n{}",
           "  ".repeat(self.depth.len() - 2),
-          self.to_indented_string(value)
+          self.indent_string(value)
         )
       }
+
+      _ => unimplemented!("'KeyValue' still needs to be implemented"),
     }
     .trim_end()
     .to_string();
@@ -271,6 +290,7 @@ impl Tracker {
   /// TODO: Test what happens when a trailing ':' is left
   pub fn reset(&mut self) {
     self.depth.clear();
+    self.depth.push(LastBlockType::Reset);
   }
 }
 
@@ -294,7 +314,7 @@ where
   fn default() -> YmLog<T> {
     YmLog {
       tracker: Default::default(),
-      log_level: Level::Info,
+      log_level: Level::Warn,
       logger: None,
     }
   }
@@ -319,6 +339,11 @@ where
     self.logger = Some(RefCell::new(writable));
   }
 
+  /// Change the level threshhold for writing a message to the log
+  pub fn set_level(&mut self, level: Level) {
+    self.log_level = level;
+  }
+
   /// Borrow the logger and write the string to it
   fn write(&mut self, block: &mut Block) {
     //-> Result<(), std::io::Error> {
@@ -332,6 +357,28 @@ where
       let value = self.tracker.serialize(block);
       let _ = logger.borrow_mut().write_all(value.as_bytes());
     }
+  }
+
+  fn split_block(&mut self, block: &mut Block) {
+    // Fail if message doesn't have a colon
+    let msg = match &block.message {
+      MessageType::Value(YmlValue::String(msg)) => msg,
+      MessageType::Value(_) => panic!("Only string messages can be split"),
+      MessageType::KeyValue(key, _) => {
+        panic!("Tried to re-split a logging block with key {:?}", key)
+      }
+      MessageType::None => panic!("Cannot split message that wasn't set"),
+    };
+
+    let (key, value) = match msg.split_once(':') {
+      Some(x) => x,
+      None => panic!("Could not find a ':' to split at\nmsg => {:?}", msg),
+    };
+
+    block.message = MessageType::KeyValue(
+      YmlValue::String(key.to_string()),
+      YmlValue::String(value.to_string()),
+    );
   }
 
   /// Convert and write the block to the log
@@ -353,8 +400,12 @@ where
         '-' => self.tracker.dedent(),
         'r' => self.tracker.reset(),
 
+        // TODO: Add this feature
+        // Split the message at the first colon, making the left a key and the right a block
+        'k' => self.split_block(block),
+
         // Formatting options for the message
-        'b' => block.set_style(Style::Literal(Chomp::Clip)),
+        // 'b' => block.set_style(Style::Literal(Chomp::Clip)),
 
         // Write the block
         '_' => {

@@ -1,8 +1,8 @@
 //! Building blocks of the log
 
 use chrono::{DateTime, Utc};
-use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
-use serde_yaml::Error as YmlError;
+use serde::{ser::SerializeStruct, Serialize, Serializer};
+use serde_yaml::{Error as YmlError, Value as YmlValue};
 
 use crate::prelude::*;
 
@@ -21,10 +21,10 @@ pub struct Block {
   pub(crate) tags: Option<Vec<String>>,
 
   /// The content of the message
-  pub(crate) message: Option<serde_yaml::Value>,
+  pub(crate) message: MessageType,
 
   /// The style that the message should be written in
-  pub(crate) style: Option<Style>,
+  pub(crate) _style: Option<YamlFormatter>,
 
   /// Any indented child blocks
   ///
@@ -56,7 +56,7 @@ impl Serialize for Block {
     .filter(|x| x.to_owned())
     .count();
     match count == 0 {
-      true => self.message.as_ref().unwrap().serialize(serializer),
+      true => self.message.unwrap().serialize(serializer),
       false => {
         let mut state = serializer.serialize_struct("Block", count)?;
         if self.timestamp.is_some() {
@@ -75,7 +75,7 @@ impl Serialize for Block {
             },
           )?
         };
-        state.serialize_field("message", self.message.as_ref().unwrap())?;
+        state.serialize_field("message", self.message.unwrap())?;
         if self.children.is_some() {
           state.serialize_field("children", &self.timestamp.unwrap())?
         };
@@ -93,7 +93,7 @@ impl Block {
   /// Change the message to the Display message of the object passed in
   pub fn set_message(&mut self, message: impl Serialize) -> Result<(), YmlError> {
     // println!("Setting the message");
-    self.message = Some(serde_yaml::to_value(message)?);
+    self.message = MessageType::Value(serde_yaml::to_value(message)?);
     Ok(())
   }
 
@@ -116,46 +116,44 @@ impl Block {
   pub fn stamp(&mut self) {
     self.timestamp = Some(Utc::now());
   }
+}
 
-  /// Set the style
-  pub fn set_style(&mut self, style: Style) {
-    self.style = Some(style);
+/// Encapsulate a message with special formatting options
+pub enum MessageType {
+  None,
+  Value(YmlValue),
+  KeyValue(YmlValue, YmlValue),
+}
+
+impl MessageType {
+  pub fn is_none(&self) -> bool {
+    matches!(self, MessageType::None)
+  }
+
+  // Unwrap a value, panic on key value
+  pub fn unwrap(&self) -> &YmlValue {
+    match self {
+      MessageType::Value(value) => value,
+      MessageType::None => panic!("Tried to unwrap an empty message"),
+      MessageType::KeyValue(key, value) => panic!(
+        "Tried to unwrap a key/value message: ({:?}, {:?})",
+        key, value
+      ),
+    }
+  }
+
+  // Unwrap a value, panic on key value
+  pub fn _unwrap_kv(&self) -> (&YmlValue, &YmlValue) {
+    match self {
+      MessageType::KeyValue(key, value) => (key, value),
+      MessageType::None => panic!("Tried to unwrap an empty message"),
+      MessageType::Value(value) => panic!("Tried to unwrap a simple value message: {:?}", value),
+    }
   }
 }
 
-/// Whether to remove any trailing newlines
-pub enum Chomp {
-  Clip,
-  Strip,
-  Keep,
-}
-
-impl Default for Chomp {
+impl Default for MessageType {
   fn default() -> Self {
-    Chomp::Clip
-  }
-}
-
-/// How YAML should handle formatting multiline strings
-pub enum Style {
-  /// This will guess the best style based on the contents of the message (Heaviest calculation)
-  Guess,
-
-  /// Block Style: Folded replaces all individual newlines with a single space '>'
-  Folded(Chomp),
-  /// Block Style: Leave all newlines as is: '|'
-  Literal(Chomp),
-
-  /// Flow Style:
-  Plain,
-  /// Flow Style: encode everything within single quotes
-  Single,
-  /// Flow Style: encode everything within single quotes
-  Double,
-}
-
-impl Default for Style {
-  fn default() -> Self {
-    Style::Guess
+    MessageType::None
   }
 }
