@@ -17,23 +17,23 @@ keywords = ["logging", "yaml", "yml"]
 lazy_static = "1.4.0"
 
 # Basic Logging
-log = "0.4.14"
+log = "0.4.20"
 
 #-- These are going to move to their own project when I get the chance
 # Logger serialization
-serde = { version = "1.0.130", features = ["derive"] }
-serde_yaml = "0.8.21"
+serde = { version = "1.0.188", features = ["derive"] }
+serde_yaml = "0.9.25"
 
 # DateTime
-chrono = { version = "0.4.19", features = ["serde"] }
+chrono = { version = "0.4.31", features = ["serde"] }
 
 # a contextual logging framework
-tracing = "0.1.29"
-tracing-subscriber = "0.2.25"
-tracing-appender = "0.1.2"
+tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
+tracing-appender = "0.2.2"
 
 
 
 [dev-dependencies]
-tempfile = "3.2.0"
-tokio-test = "0.4.2"
+tempfile = "3.8.0"
+tokio-test = "0.4.3"
